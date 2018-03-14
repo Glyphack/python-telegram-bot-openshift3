@@ -1,2 +1,2 @@
-telepot==6.8
+telepot
 aiohttp==2.2.5
