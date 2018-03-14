@@ -1,63 +1,72 @@
-import logging
-from queue import Queue
-from threading import Thread
-from telegram import Bot
-from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Updater, Filters
-
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    level=logging.INFO)
-logger = logging.getLogger(__name__)
-TOKEN = 'YOUR-TELEGRAM-BOT-TOKEN'
+import requests
+import datetime
 
 
-def start(bot, update):
-    update.message.reply_text('welcome MESSAGE')
+class BotHandler:
 
+    def __init__(self, token):
+        self.token = token
+        self.api_url = "https://api.telegram.org/bot{}/".format(token)
 
-def help(bot, update):
-    update.message.reply_text('help message')
+    def get_updates(self, offset=None, timeout=30):
+        method = 'getUpdates'
+        params = {'timeout': timeout, 'offset': offset}
+        resp = requests.get(self.api_url + method, params)
+        result_json = resp.json()['result']
+        return result_json
 
+    def send_message(self, chat_id, text):
+        params = {'chat_id': chat_id, 'text': text}
+        method = 'sendMessage'
+        resp = requests.post(self.api_url + method, params)
+        return resp
 
-def echo(bot, update):
-    update.message.reply_text(update.message.text)
+    def get_last_update(self):
+        get_result = self.get_updates()
 
+        if len(get_result) > 0:
+            last_update = get_result[-1]
+        else:
+            last_update = get_result[len(get_result)]
 
-def error(bot, update, error):
-    logger.warning('Update "%s" caused error "%s"' % (update, error))
+        return last_update
 
-# Write your handlers here
+greet_bot = BotHandler("577270368:AAE1Czzi3uLerDm-0lZKl1sAo1-woXjwW08")
+greetings = ('hello', 'hi', 'greetings', 'sup')
+now = datetime.datetime.now()
 
+def main():
+    new_offset = None
+    today = now.day
+    hour = now.hour
 
-def setup(webhook_url=None):
-    """If webhook_url is not passed, run with long-polling."""
-    logging.basicConfig(level=logging.WARNING)
-    if webhook_url:
-        bot = Bot(TOKEN)
-        update_queue = Queue()
-        dp = Dispatcher(bot, update_queue)
-    else:
-        updater = Updater(TOKEN)
-        bot = updater.bot
-        dp = updater.dispatcher
-        dp.add_handler(CommandHandler("start", start))
-        dp.add_handler(CommandHandler("help", help))
+    while True:
+        greet_bot.get_updates(new_offset)
 
-        # on noncommand i.e message - echo the message on Telegram
-        dp.add_handler(MessageHandler(Filters.text, echo))
+        last_update = greet_bot.get_last_update()
 
-        # log all errors
-        dp.add_error_handler(error)
-    # Add your handlers here
-    if webhook_url:
-        bot.set_webhook(webhook_url=webhook_url)
-        thread = Thread(target=dp.start, name='dispatcher')
-        thread.start()
-        return update_queue, bot
-    else:
-        bot.set_webhook()  # Delete webhook
-        updater.start_polling()
-        updater.idle()
+        last_update_id = last_update['update_id']
+        last_chat_text = last_update['message']['text']
+        last_chat_id = last_update['message']['chat']['id']
+        last_chat_name = last_update['message']['chat']['first_name']
+
+        if last_chat_text.lower() in greetings and today == now.day and 6 <= hour < 12:
+            greet_bot.send_message(last_chat_id, 'Good Morning  {}'.format(last_chat_name))
+            today += 1
+
+        elif last_chat_text.lower() in greetings and today == now.day and 12 <= hour < 17:
+            greet_bot.send_message(last_chat_id, 'Good Afternoon {}'.format(last_chat_name))
+            today += 1
+
+        elif last_chat_text.lower() in greetings and today == now.day and 17 <= hour < 23:
+            greet_bot.send_message(last_chat_id, 'Good Evening  {}'.format(last_chat_name))
+            today += 1
+
+        new_offset = last_update_id + 1
 
 
 if __name__ == '__main__':
-    setup()
+    try:
+        main()
+    except KeyboardInterrupt:
+        exit()
