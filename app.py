@@ -1,141 +1,199 @@
-from telegram import (ReplyKeyboardMarkup, ReplyKeyboardRemove)
-from telegram.ext import (Updater, CommandHandler, MessageHandler, Filters, RegexHandler,
-                          ConversationHandler)
+import sys
+import time
+import telepot
+from telepot.loop import MessageLoop
+from telepot.delegate import (
+    per_chat_id_in, per_application, call, create_open, pave_event_space)
 
-import logging
+"""
+$ python3.5 chatbox_nodb.py <token> <owner_id>
+Chatbox - a mailbox for chats
+1. People send messages to your bot.
+2. Your bot remembers the messages.
+3. You read the messages later.
+It accepts the following commands from you, the owner, only:
+- `/unread` - tells you who has sent you messages and how many
+- `/next` - read next sender's messages
+This example can be a starting point for **customer support** type of bots.
+For example, customers send questions to a bot account; staff answers questions
+behind the scene, makes it look like the bot is answering questions.
+It further illustrates the use of `DelegateBot` and `ChatHandler`, and how to
+spawn delegates differently according to the role of users.
+This example only handles text messages and stores messages in memory.
+If the bot is killed, all messages are lost. It is an *example* after all.
+"""
 
-# Enable logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    level=logging.INFO)
+# Simulate a database to store unread messages
+class UnreadStore(object):
+    def __init__(self):
+        self._db = {}
 
-logger = logging.getLogger(__name__)
+    def put(self, msg):
+        chat_id = msg['chat']['id']
 
-GENDER, PHOTO, LOCATION, BIO = range(4)
+        if chat_id not in self._db:
+            self._db[chat_id] = []
 
+        self._db[chat_id].append(msg)
 
-def start(bot, update):
-    reply_keyboard = [['Boy', 'Girl', 'Other']]
+    # Pull all unread messages of a `chat_id`
+    def pull(self, chat_id):
+        messages = self._db[chat_id]
+        del self._db[chat_id]
 
-    update.message.reply_text(
-        'Hi! My name is Professor Bot. I will hold a conversation with you. '
-        'Send /cancel to stop talking to me.\n\n'
-        'Are you a boy or a girl?',
-        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True))
+        # sort by date
+        messages.sort(key=lambda m: m['date'])
+        return messages
 
-    return GENDER
-
-
-def gender(bot, update):
-    user = update.message.from_user
-    logger.info("Gender of %s: %s", user.first_name, update.message.text)
-    update.message.reply_text('I see! Please send me a photo of yourself, '
-                              'so I know what you look like, or send /skip if you don\'t want to.',
-                              reply_markup=ReplyKeyboardRemove())
-
-    return PHOTO
-
-
-def photo(bot, update):
-    user = update.message.from_user
-    photo_file = bot.get_file(update.message.photo[-1].file_id)
-    photo_file.download('user_photo.jpg')
-    logger.info("Photo of %s: %s", user.first_name, 'user_photo.jpg')
-    update.message.reply_text('Gorgeous! Now, send me your location please, '
-                              'or send /skip if you don\'t want to.')
-
-    return LOCATION
-
-
-def skip_photo(bot, update):
-    user = update.message.from_user
-    logger.info("User %s did not send a photo.", user.first_name)
-    update.message.reply_text('I bet you look great! Now, send me your location please, '
-                              'or send /skip.')
-
-    return LOCATION
+    # Tells how many unread messages per chat_id
+    def unread_per_chat(self):
+        return [(k,len(v)) for k,v in self._db.items()]
 
 
-def location(bot, update):
-    user = update.message.from_user
-    user_location = update.message.location
-    logger.info("Location of %s: %f / %f", user.first_name, user_location.latitude,
-                user_location.longitude)
-    update.message.reply_text('Maybe I can visit you sometime! '
-                              'At last, tell me something about yourself.')
+# Accept commands from owner. Give him unread messages.
+class OwnerHandler(telepot.helper.ChatHandler):
+    def __init__(self, seed_tuple, store, **kwargs):
+        super(OwnerHandler, self).__init__(seed_tuple, **kwargs)
+        self._store = store
 
-    return BIO
+    def _read_messages(self, messages):
+        for msg in messages:
+            # assume all messages are text
+            self.sender.sendMessage(msg['text'])
 
+    def on_chat_message(self, msg):
+        content_type, chat_type, chat_id = telepot.glance(msg)
 
-def skip_location(bot, update):
-    user = update.message.from_user
-    logger.info("User %s did not send a location.", user.first_name)
-    update.message.reply_text('You seem a bit paranoid! '
-                              'At last, tell me something about yourself.')
+        if content_type != 'text':
+            self.sender.sendMessage("I don't understand")
+            return
 
-    return BIO
+        command = msg['text'].strip().lower()
 
+        # Tells who has sent you how many messages
+        if command == '/unread':
+            results = self._store.unread_per_chat()
 
-def bio(bot, update):
-    user = update.message.from_user
-    logger.info("Bio of %s: %s", user.first_name, update.message.text)
-    update.message.reply_text('Thank you! I hope we can talk again some day.')
+            lines = []
+            for r in results:
+                n = 'ID: %d\n%d unread' % r
+                lines.append(n)
 
-    return ConversationHandler.END
+            if not len(lines):
+                self.sender.sendMessage('No unread messages')
+            else:
+                self.sender.sendMessage('\n'.join(lines))
 
+        # read next sender's messages
+        elif command == '/next':
+            results = self._store.unread_per_chat()
 
-def cancel(bot, update):
-    user = update.message.from_user
-    logger.info("User %s canceled the conversation.", user.first_name)
-    update.message.reply_text('Bye! I hope we can talk again some day.',
-                              reply_markup=ReplyKeyboardRemove())
+            if not len(results):
+                self.sender.sendMessage('No unread messages')
+                return
 
-    return ConversationHandler.END
+            chat_id = results[0][0]
+            unread_messages = self._store.pull(chat_id)
 
+            self.sender.sendMessage('From ID: %d' % chat_id)
+            self._read_messages(unread_messages)
 
-def error(bot, update, error):
-    """Log Errors caused by Updates."""
-    logger.warning('Update "%s" caused error "%s"', update, error)
-
-
-def main():
-    # Create the EventHandler and pass it your bot's token.
-    updater = Updater("577270368:AAE1Czzi3uLerDm-0lZKl1sAo1-woXjwW08")
-
-    # Get the dispatcher to register handlers
-    dp = updater.dispatcher
-
-    # Add conversation handler with the states GENDER, PHOTO, LOCATION and BIO
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
-
-        states={
-            GENDER: [RegexHandler('^(Boy|Girl|Other)$', gender)],
-
-            PHOTO: [MessageHandler(Filters.photo, photo),
-                    CommandHandler('skip', skip_photo)],
-
-            LOCATION: [MessageHandler(Filters.location, location),
-                       CommandHandler('skip', skip_location)],
-
-            BIO: [MessageHandler(Filters.text, bio)]
-        },
-
-        fallbacks=[CommandHandler('cancel', cancel)]
-    )
-
-    dp.add_handler(conv_handler)
-
-    # log all errors
-    dp.add_error_handler(error)
-
-    # Start the Bot
-    updater.start_polling()
-
-    # Run the bot until you press Ctrl-C or the process receives SIGINT,
-    # SIGTERM or SIGABRT. This should be used most of the time, since
-    # start_polling() is non-blocking and will stop the bot gracefully.
-    updater.idle()
+        else:
+            self.sender.sendMessage("I don't understand")
 
 
-if __name__ == '__main__':
-    main()
+class MessageSaver(telepot.helper.Monitor):
+    def __init__(self, seed_tuple, store, exclude):
+        # The `capture` criteria means to capture all messages.
+        super(MessageSaver, self).__init__(seed_tuple, capture=[[lambda msg: not telepot.is_event(msg)]])
+        self._store = store
+        self._exclude = exclude
+
+    # Store every message, except those whose sender is in the exclude list, or non-text messages.
+    def on_chat_message(self, msg):
+        content_type, chat_type, chat_id = telepot.glance(msg)
+
+        if chat_id in self._exclude:
+            print('Chat id %d is excluded.' % chat_id)
+            return
+
+        if content_type != 'text':
+            print('Content type %s is ignored.' % content_type)
+            return
+
+        print('Storing message: %s' % msg)
+        self._store.put(msg)
+
+
+import threading
+
+class CustomThread(threading.Thread):
+    def start(self):
+        print('CustomThread starting ...')
+        super(CustomThread, self).start()
+
+# Note how this function wraps around the `call()` function below to implement
+# a custom thread for delegation.
+def custom_thread(func):
+    def f(seed_tuple):
+        target = func(seed_tuple)
+
+        if type(target) is tuple:
+            run, args, kwargs = target
+            t = CustomThread(target=run, args=args, kwargs=kwargs)
+        else:
+            t = CustomThread(target=target)
+
+        return t
+    return f
+
+
+class ChatBox(telepot.DelegatorBot):
+    def __init__(self, token, owner_id):
+        self._owner_id = owner_id
+        self._seen = set()
+        self._store = UnreadStore()
+
+        super(ChatBox, self).__init__(token, [
+            # Here is a delegate to specially handle owner commands.
+            pave_event_space()(
+                per_chat_id_in([owner_id]), create_open, OwnerHandler, self._store, timeout=20),
+
+            # Only one MessageSaver is ever spawned for entire application.
+            (per_application(), create_open(MessageSaver, self._store, exclude=[owner_id])),
+
+            # For senders never seen before, send him a welcome message.
+            (self._is_newcomer, custom_thread(call(self._send_welcome))),
+        ])
+
+    # seed-calculating function: use returned value to indicate whether to spawn a delegate
+    def _is_newcomer(self, msg):
+        if telepot.is_event(msg):
+            return None
+
+        chat_id = msg['chat']['id']
+        if chat_id == self._owner_id:  # Sender is owner
+            return None  # No delegate spawned
+
+        if chat_id in self._seen:  # Sender has been seen before
+            return None  # No delegate spawned
+
+        self._seen.add(chat_id)
+        return []  # non-hashable ==> delegates are independent, no seed association is made.
+
+    def _send_welcome(self, seed_tuple):
+        chat_id = seed_tuple[1]['chat']['id']
+
+        print('Sending welcome ...')
+        self.sendMessage(chat_id, 'Hello!')
+
+
+TOKEN = "577270368:AAE1Czzi3uLerDm-0lZKl1sAo1-woXjwW08"
+OWNER_ID = 95157011
+
+bot = ChatBox(TOKEN, OWNER_ID)
+MessageLoop(bot).run_as_thread()
+print('Listening ...')
+
+while 1:
+    time.sleep(10)
