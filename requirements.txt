@@ -1,1 +1,1 @@
-telepot
+telepot==2.2.5
