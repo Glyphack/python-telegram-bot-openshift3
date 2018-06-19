@@ -188,7 +188,7 @@ class ChatBox(telepot.DelegatorBot):
         self.sendMessage(chat_id, 'Hello!')
 
 
-TOKEN = "577270368:AAE1Czzi3uLerDm-0lZKl1sAo1-woXjwW08"
+TOKEN = ""
 OWNER_ID = 95157011
 
 bot = ChatBox(TOKEN, OWNER_ID)
